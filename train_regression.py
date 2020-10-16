@@ -8,75 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-class Model0(nn.Module):
-    '''
-    '''
 
-    def __init__(self):
-        super(Model0, self).__init__()
-        self.extractor = torchvision.models.resnet18(True)
-        self.embd = nn.Embedding(3, 5)
-
-        self.regressor = nn.Linear(520, 19)
-
-    def forward(self, img, gender, height, weight, age):
-        with torch.no_grad():
-            x = self.extractor.conv1(img)
-            x = self.extractor.bn1(x)
-            x = self.extractor.relu(x)
-            x = self.extractor.maxpool(x)
-
-            x = self.extractor.layer1(x)
-            x = self.extractor.layer2(x)
-            x = self.extractor.layer3(x)
-            x = self.extractor.layer4(x)
-            x = self.extractor.avgpool(x)
-
-        features = torch.flatten(x, 1)
-        gender = self.embd(gender)
-
-        x = torch.cat((features, gender, height, weight, age), 1)
-
-        return self.regressor(x)
-
-
-class Model1(nn.Module):
-
-    '''
-    TRAIN LOSS:  15.156542003154755
-    VALID LOSS:  50.013286113739014 49.15118074417114
-    '''
-
-    def __init__(self):
-        super(Model1, self).__init__()
-        self.extractor = torchvision.models.resnet18(True)
-        self.embd = nn.Embedding(3, 5)
-
-        self.regressor = nn.Linear(520, 19)
-
-    def forward(self, img, gender, height, weight, age):
-        with torch.no_grad():
-            x = self.extractor.conv1(img)
-            x = self.extractor.bn1(x)
-            x = self.extractor.relu(x)
-            x = self.extractor.maxpool(x)
-
-            x = self.extractor.layer1(x)
-            x = self.extractor.layer2(x)
-            x = self.extractor.layer3(x)
-
-        x = self.extractor.layer4(x)
-        x = self.extractor.avgpool(x)
-
-        features = torch.flatten(x, 1)
-        gender = self.embd(gender)
-
-        x = torch.cat((features, gender, height, weight, age), 1)
-
-        return self.regressor(x)
-
-
-class Model2(nn.Module):
+class Model(nn.Module):
 
     '''
     TRAIN LOSS:
@@ -84,18 +17,18 @@ class Model2(nn.Module):
     '''
 
     def __init__(self):
-        super(Model2, self).__init__()
+        super(Model, self).__init__()
         self.extractor = torchvision.models.resnet18(True)
         self.embd = nn.Embedding(3, 5)
 
-        self.regressor = nn.Sequential(nn.Linear(520, 1024), nn.Dropout(0.5), nn.Linear(1024, 19))
+        self.regressor = nn.Sequential(nn.Linear(520, 19))
 
     def forward(self, img, gender, height, weight, age):
-        with torch.no_grad():
-            x = self.extractor.conv1(img)
-            x = self.extractor.bn1(x)
-            x = self.extractor.relu(x)
-            x = self.extractor.maxpool(x)
+        # with torch.no_grad():
+        x = self.extractor.conv1(img)
+        x = self.extractor.bn1(x)
+        x = self.extractor.relu(x)
+        x = self.extractor.maxpool(x)
 
         x = self.extractor.layer1(x)
         x = self.extractor.layer2(x)
@@ -111,13 +44,14 @@ class Model2(nn.Module):
         return self.regressor(x)
 
 
+
 def train():
     torch.random.manual_seed(1)
     np.random.seed(1)
 
-    model = Model2().cuda()
+    model = Model().cuda()
     optim = torch.optim.Adam(model.parameters(), lr=1e-3)
-    schedular = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, verbose=True)
+    schedular = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, verbose=True, min_lr=1e-4)
 
     dataset = GlinsunDataset("/home/sparky/body-dataset/Overall-Body-Database-20201009.csv",
                              "/home/sparky/body-dataset/")
@@ -125,16 +59,16 @@ def train():
     # dataset = GlinsunDataset("/home/sparky/Documents/Projects/aibody-dataset/Overall-Body-Database-20201009.csv",
     #                          "/home/sparky/Documents/Projects/aibody-dataset/")
 
-    train_set, val_set = torch.utils.data.random_split(dataset, [1893, 200])
+    # train_set, val_set = torch.utils.data.random_split(dataset, [100, 2093 - 100]) # 2093
 
-    train_loader = DataLoader(train_set,
-                              batch_size=16,
-                              num_workers=4,
+    train_loader = DataLoader(dataset,
+                              batch_size=128,
+                              num_workers=8,
                               shuffle=True)
 
-    val_loader = DataLoader(val_set,
-                            batch_size=16,
-                            num_workers=4,
+    val_loader = DataLoader(dataset,
+                            batch_size=128,
+                            num_workers=8,
                             shuffle=True)
 
     validation_record = np.inf
@@ -172,31 +106,31 @@ def train():
         training_history.append(total_loss)
         schedular.step(total_loss)
 
-        model = model.eval()
-
-        total_loss = 0
-        N = 0
-        # go over validation multiple times (augmentation)
-        for _ in range(10):
-
-            for batch in val_loader:
-                gender_value, height_value, weight_value, age_value, target, img = batch
-
-                out = model.forward(img.cuda(), gender_value.cuda(), height_value.unsqueeze(1).cuda(),
-                                    weight_value.unsqueeze(1).cuda(), age_value.unsqueeze(1).cuda())
-                loss = F.l1_loss(out, target.cuda(), reduction='none')
-                loss = loss[~loss.isnan()]
-                total_loss += loss.sum().item()
-                N += loss.shape[0]
-
-                loss = loss.mean()
-
-                total_loss += loss.item()
-
-        total_loss /= N
-        print('VALID LOSS: ', total_loss , validation_record)
-
-        validation_history.append(total_loss)
+        # model = model.eval()
+        #
+        # total_loss = 0
+        # N = 0
+        # # go over validation multiple times (augmentation)
+        # for _ in range(10):
+        #
+        #     for batch in val_loader:
+        #         gender_value, height_value, weight_value, age_value, target, img = batch
+        #
+        #         out = model.forward(img.cuda(), gender_value.cuda(), height_value.unsqueeze(1).cuda(),
+        #                             weight_value.unsqueeze(1).cuda(), age_value.unsqueeze(1).cuda())
+        #         loss = F.l1_loss(out, target.cuda(), reduction='none')
+        #         loss = loss[~loss.isnan()]
+        #         total_loss += loss.sum().item()
+        #         N += loss.shape[0]
+        #
+        #         loss = loss.mean()
+        #
+        #         total_loss += loss.item()
+        #
+        # total_loss /= N
+        # print('VALID LOSS: ', total_loss , validation_record)
+        #
+        # validation_history.append(total_loss)
 
         print(out.detach().cpu().numpy()[:1], ' | ', target.detach().cpu().numpy()[:1])
 
