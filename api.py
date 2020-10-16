@@ -37,8 +37,8 @@ def segmentation_mask(model, img):
 class Model(nn.Module):
 
     '''
-    TRAIN LOSS:  3.041159379899558
-    VALID LOSS:  2.540838477733394 2.5285385551957966
+    TRAIN LOSS:
+    VALID LOSS:
     '''
 
     def __init__(self):
@@ -46,14 +46,14 @@ class Model(nn.Module):
         self.extractor = torchvision.models.resnet18(True)
         self.embd = nn.Embedding(3, 5)
 
-        self.regressor = nn.Sequential(nn.Linear(520, 1024), nn.Dropout(0.5), nn.Linear(1024, 19))
+        self.regressor = nn.Sequential(nn.Linear(520, 19))
 
     def forward(self, img, gender, height, weight, age):
-        with torch.no_grad():
-            x = self.extractor.conv1(img)
-            x = self.extractor.bn1(x)
-            x = self.extractor.relu(x)
-            x = self.extractor.maxpool(x)
+        # with torch.no_grad():
+        x = self.extractor.conv1(img)
+        x = self.extractor.bn1(x)
+        x = self.extractor.relu(x)
+        x = self.extractor.maxpool(x)
 
         x = self.extractor.layer1(x)
         x = self.extractor.layer2(x)
@@ -67,6 +67,7 @@ class Model(nn.Module):
         x = torch.cat((features, gender, height, weight, age), 1)
 
         return self.regressor(x)
+
 
 
 def extract_measurement(tensor):
@@ -142,10 +143,10 @@ class Predictor:
 if __name__ == '__main__':
 
     gender = torch.tensor([0]) # 0 - female; 1 - male; 2 - who knows
-    height = torch.tensor([[160]]) # cm
-    weight = torch.tensor([[90]]) # kg
+    height = torch.tensor([[153]]) # cm
+    weight = torch.tensor([[49]]) # kg
     age = torch.tensor([[38]]) # seconds.. joke. years.
-    img = Image.open('249480261.jpg') #  photo
+    img = Image.open('2081-张雪花.jpg') #  photo
     img = transforms.Resize(256)(img)
 
     state_dict  = torch.load("state_dict.torch")
