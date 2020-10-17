@@ -51,12 +51,12 @@ def train():
 
     model = Model().cuda()
     optim = torch.optim.Adam(model.parameters(), lr=1e-3)
-    schedular = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, verbose=True, min_lr=1e-4)
+    schedular = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, verbose=True)
 
-    dataset = GlinsunDataset("/home/sparky/body-dataset/Overall-Body-Database-20201009.csv",
+    dataset = GlinsunDataset("./Overall-Body-Database-20201017-corrected.csv",
                              "/home/sparky/body-dataset/")
 
-    # dataset = GlinsunDataset("/home/sparky/Documents/Projects/aibody-dataset/Overall-Body-Database-20201009.csv",
+    # dataset = GlinsunDataset("/home/sparky/Documents/Projects/aibody-dataset/Overall-Body-Database-20201017-corrected.csv",
     #                          "/home/sparky/Documents/Projects/aibody-dataset/")
 
     # train_set, val_set = torch.utils.data.random_split(dataset, [100, 2093 - 100]) # 2093
