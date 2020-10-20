@@ -8,9 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-
 class Model(nn.Module):
-
     '''
     TRAIN LOSS:
     VALID LOSS:
@@ -18,33 +16,29 @@ class Model(nn.Module):
 
     def __init__(self):
         super(Model, self).__init__()
-        self.extractor = torchvision.models.resnet18(True)
-        self.embd = nn.Embedding(3, 5)
-        self.widening = nn.Linear(8, 512)
-        self.regressor = nn.Sequential(nn.Linear(1024, 360), nn.ELU(), nn.Linear(360, 64), nn.ELU(), nn.Linear(64, 19)) # nn.Dropout(0.5),
+        self.extractor = torchvision.models.densenet121(True)
+        self.embd = nn.Embedding(3, 2)
+
+        self.head0 = nn.Sequential(nn.Linear(5, 1024), nn.ELU())
+        self.regressor = nn.Sequential(nn.Linear(1024 + 1024, 2048), nn.ELU(), nn.Linear(2048, 4096), nn.ELU(), nn.Linear(4096, 19))
 
     def forward(self, img, gender, height, weight, age):
         # with torch.no_grad():
-        x = self.extractor.conv1(img)
-        x = self.extractor.bn1(x)
-        x = self.extractor.relu(x)
-        x = self.extractor.maxpool(x)
 
-        x = self.extractor.layer1(x)
-        x = self.extractor.layer2(x)
-        x = self.extractor.layer3(x)
-        x = self.extractor.layer4(x)
-        x = self.extractor.avgpool(x)
+        features = self.extractor.features(img)
+        out = F.relu(features, inplace=True)
+        out = F.adaptive_avg_pool2d(out, (1, 1))
+        out = torch.flatten(out, 1)
 
-        features = torch.flatten(x, 1)
         gender = self.embd(gender)
 
-        x = torch.cat((gender, height, weight, age), 1)
-        x = self.widening(x)
-        x = torch.cat((features, x), 1)
+        x = torch.cat((gender, height / 150., weight / 90., age / 60.), 1)
+
+        x0 = self.head0(x)
+        x1 = out
+        x = torch.cat((x0, x1), 1)
 
         return self.regressor(x)
-
 
 
 def train():
@@ -53,7 +47,7 @@ def train():
 
     model = Model().cuda()
     optim = torch.optim.Adam(model.parameters(), lr=1e-4)
-    schedular = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, verbose=True, min_lr=1e-4)
+    # schedular = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, verbose=True, min_lr=1e-4)
 
     # state_dict = torch.load('state_dict.torch')
     # model.load_state_dict(state_dict)
@@ -64,16 +58,15 @@ def train():
     # dataset = GlinsunDataset("./Overall-Body-Database-20201017-corrected.csv",
     #                          "/home/sparky/Documents/Projects/aibody-dataset/")
 
-
-    train_set, val_set = torch.utils.data.random_split(dataset, [1700, 1892 - 1700]) # 2093, 1954
+    train_set, val_set = torch.utils.data.random_split(dataset, [1600, 1892 - 1600])  # 2093, 1954
 
     train_loader = DataLoader(train_set,
-                              batch_size=128,
+                              batch_size=32,
                               num_workers=8,
                               shuffle=True)
 
     val_loader = DataLoader(val_set,
-                            batch_size=128,
+                            batch_size=32,
                             num_workers=8,
                             shuffle=True)
 
@@ -91,10 +84,12 @@ def train():
         total_loss = 0
         N = 0
         max_error = 0
+        bigget_than = 0
 
         for idx, batch in enumerate(train_loader):
+
             gender_value, height_value, weight_value, age_value, target, img = batch
-            target =  target.cuda()
+            target = target.cuda()
 
             out = model.forward(img.cuda(), gender_value.cuda(), height_value.unsqueeze(1).cuda(),
                                 weight_value.unsqueeze(1).cuda(), age_value.unsqueeze(1).cuda())
@@ -102,34 +97,29 @@ def train():
             out = out[~target.isnan()]
             target = target[~target.isnan()]
 
-
-            mse_loss = F.mse_loss(out, target)
             l1_loss = F.l1_loss(out, target, reduction='none')
             # loss = loss[~loss.isnan()]
+
 
             if max_error < l1_loss.max().item():
                 max_error = l1_loss.max().item()
 
             total_loss += l1_loss.sum().item()
             N += l1_loss.shape[0]
+            bigget_than += (l1_loss > 2).sum().item()
 
             # print(model.extractor.conv1.weight[:1])
 
             optim.zero_grad()
-            mse_loss.backward()
+            l1_loss.mean().backward()
             optim.step()
-
-            # print(model.extractor.conv1.weight[:1])
-
-            # print(idx)
 
         total_loss /= N
 
-        print('TRAIN LOSS: ', total_loss, max_error)
+        print('TRAIN LOSS: ', total_loss, max_error, bigget_than)
 
         training_history.append(total_loss)
-        schedular.step(total_loss)
-
+        # schedular.step(total_loss)
 
         with torch.no_grad():
 
@@ -138,6 +128,7 @@ def train():
             total_loss = 0
             N = 0
             max_error = 0
+            bigget_than = 0
             # go over validation multiple times (augmentation)
             for _ in range(1):
 
@@ -150,23 +141,17 @@ def train():
                     out = out[~target.isnan()]
                     target = target[~target.isnan()]
 
-
                     loss = F.l1_loss(out, target.cuda(), reduction='none')
-
 
                     if max_error < loss.max().item():
                         max_error = loss.max().item()
 
                     total_loss += loss.sum().item()
                     N += loss.shape[0]
-
-                    loss = loss.mean()
-
-                    total_loss += loss.item()
+                    bigget_than += (loss > 2).sum().item()
 
             total_loss /= N
-            print('VALID LOSS: ', total_loss , validation_record, max_error)
-
+            print('VALID LOSS: ', total_loss, validation_record, max_error, bigget_than)
 
             validation_history.append(total_loss)
 
@@ -193,5 +178,6 @@ def train():
 
 if __name__ == '__main__':
     import os
+
     os.environ['CUDA_VISIBLE_DEVICES'] = "0"
     train()
