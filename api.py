@@ -1,4 +1,3 @@
-
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import torchvision
@@ -9,13 +8,14 @@ import numpy as np
 from torchvision import transforms
 from PIL import Image
 
-
+from glinsun_dataset import GlinsunDataset
 import gluoncv
 import mxnet as mx
 import os
 from gluoncv.data.transforms.presets.segmentation import test_transform
 
 ctx = mx.cpu()
+
 
 def segmentation_mask(model, img):
     # using cpu
@@ -34,41 +34,39 @@ def segmentation_mask(model, img):
 
     return predict
 
-class Model(nn.Module):
 
+class Model(nn.Module):
     '''
     TRAIN LOSS:
     VALID LOSS:
     '''
 
+
     def __init__(self):
         super(Model, self).__init__()
-        self.extractor = torchvision.models.resnet18(True)
-        self.embd = nn.Embedding(3, 5)
+        self.extractor = torchvision.models.densenet121(False)
+        self.embd = nn.Embedding(3, 2)
 
-        self.regressor = nn.Sequential(nn.Linear(520, 19))
+        self.head0 = nn.Sequential(nn.Linear(5, 1024), nn.ELU())
+        self.regressor = nn.Sequential(nn.Linear(1024 + 1024, 2048), nn.ELU(), nn.Linear(2048, 4096), nn.ELU(), nn.Linear(4096, 19))
 
     def forward(self, img, gender, height, weight, age):
         # with torch.no_grad():
-        x = self.extractor.conv1(img)
-        x = self.extractor.bn1(x)
-        x = self.extractor.relu(x)
-        x = self.extractor.maxpool(x)
 
-        x = self.extractor.layer1(x)
-        x = self.extractor.layer2(x)
-        x = self.extractor.layer3(x)
-        x = self.extractor.layer4(x)
-        x = self.extractor.avgpool(x)
+        features = self.extractor.features(img)
+        out = F.relu(features, inplace=True)
+        out = F.adaptive_avg_pool2d(out, (1, 1))
+        out = torch.flatten(out, 1)
 
-        features = torch.flatten(x, 1)
         gender = self.embd(gender)
 
-        x = torch.cat((features, gender, height, weight, age), 1)
+        x = torch.cat((gender, height / 150., weight / 90., age / 60.), 1)
+
+        x0 = self.head0(x)
+        x1 = out
+        x = torch.cat((x0, x1), 1)
 
         return self.regressor(x)
-
-
 
 def extract_measurement(tensor):
     results = dict()
@@ -98,6 +96,7 @@ def extract_measurement(tensor):
 
     return results
 
+
 class Predictor:
 
     def __init__(self, state_dict):
@@ -117,7 +116,6 @@ class Predictor:
             normalize
         ])
 
-
     def run(self, gender_value, height_value, weight_value, age_value, img):
         mask = segmentation_mask(self.bkgmodel, img)
         img = np.array(img)
@@ -125,13 +123,10 @@ class Predictor:
         img = Image.fromarray(img)
         img = self.transform(img)
 
-
-
         # plt.imshow(img.transpose(0, 2).transpose(0, 1).cpu().detach().numpy())
         # plt.show()
 
         img = img.unsqueeze(0)
-
 
         out = self.model.forward(img.cuda(), gender_value.cuda(), height_value.cuda(),
                                  weight_value.cuda(), age_value.cuda())
@@ -140,17 +135,44 @@ class Predictor:
 
         return reusults
 
-if __name__ == '__main__':
 
-    gender = torch.tensor([0]) # 0 - female; 1 - male; 2 - who knows
-    height = torch.tensor([[153]]) # cm
-    weight = torch.tensor([[49]]) # kg
-    age = torch.tensor([[38]]) # seconds.. joke. years.
-    img = Image.open('2081-张雪花.jpg') #  photo
+# def test(predictor):
+#     dataset = GlinsunDataset("./Overall-Body-Database-20201017-corrected.csv",
+#                              "/home/sparky/body-dataset/")
+#
+#     loader = DataLoader(dataset,
+#                         batch_size=1,
+#                         num_workers=0,
+#                         shuffle=False)
+#
+#
+#     for idx, batch in enumerate(loader):
+#         gender_value, height_value, weight_value, age_value, target, img = batch
+#         target = target.cuda()
+#
+#         out = predictor.model.forward(img.cuda(), gender_value.cuda(), height_value.unsqueeze(1).cuda(),
+#                             weight_value.unsqueeze(1).cuda(), age_value.unsqueeze(1).cuda())
+#
+#         errors = (target - out).abs()
+#         errors = errors[~errors.isnan()].mean()
+#
+#
+#         reusults = extract_measurement(out)
+#
+#         print(errors)
+
+
+if __name__ == '__main__':
+    state_dict = torch.load("state_dict.torch")
+    predictor = Predictor(state_dict)
+    # test(predictor)
+
+    gender = torch.tensor([0])  # 0 - female; 1 - male; 2 - who knows
+    height = torch.tensor([[153]])  # cm
+    weight = torch.tensor([[49]])  # kg
+    age = torch.tensor([[38]])  # seconds.. joke. years.
+    img = Image.open('2081-张雪花.jpg')  # photo
     img = transforms.Resize(256)(img)
 
-    state_dict  = torch.load("state_dict.torch")
-
-    predictor = Predictor(state_dict)
     reusults = predictor.run(gender, height, weight, age, img)
     print(reusults)
