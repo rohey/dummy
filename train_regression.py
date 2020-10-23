@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
-
+import time
 
 class Model(nn.Module):
     '''
@@ -20,7 +20,7 @@ class Model(nn.Module):
         self.embd = nn.Embedding(3, 2)
 
         self.head0 = nn.Sequential(nn.Linear(5, 1024), nn.ELU())
-        self.regressor = nn.Sequential(nn.Linear(1024 + 1024, 2048), nn.ELU(), nn.Linear(2048, 4096), nn.ELU(), nn.Linear(4096, 19))
+        self.regressor = nn.Sequential(nn.Linear(1024 + 1024, 2048), nn.ELU(), nn.Dropout(0.25), nn.Linear(2048, 4096), nn.ELU(), nn.Dropout(0.5), nn.Linear(4096, 19))
 
     def forward(self, img, gender, height, weight, age):
         # with torch.no_grad():
@@ -41,9 +41,9 @@ class Model(nn.Module):
         return self.regressor(x)
 
 
-def train():
-    torch.random.manual_seed(1)
-    np.random.seed(1)
+def train(index):
+    torch.random.manual_seed(index + time.time())
+    np.random.seed(index + int(time.time()))
 
     model = Model().cuda()
     optim = torch.optim.Adam(model.parameters(), lr=1e-4)
@@ -59,6 +59,8 @@ def train():
     #                          "/home/sparky/Documents/Projects/aibody-dataset/")
 
     train_set, val_set = torch.utils.data.random_split(dataset, [1600, 1892 - 1600])  # 2093, 1954
+
+
 
     train_loader = DataLoader(train_set,
                               batch_size=32,
@@ -76,6 +78,7 @@ def train():
     validation_history = []
 
     epoch = 0
+    no_progress = 0
 
     while True:
 
@@ -130,7 +133,7 @@ def train():
             max_error = 0
             bigget_than = 0
             # go over validation multiple times (augmentation)
-            for _ in range(1):
+            for _ in range(5):
 
                 for batch in val_loader:
                     gender_value, height_value, weight_value, age_value, target, img = batch
@@ -155,12 +158,19 @@ def train():
 
             validation_history.append(total_loss)
 
-            print(out.detach().cpu().numpy()[:1], ' | ', target.detach().cpu().numpy()[:1])
+            out = out.detach().cpu().numpy()
+            target = target.detach().cpu().numpy()
+            chosen = np.random.randint(0, target.shape[0])
+
+            print(out[chosen], ' | ', target[chosen])
 
             if validation_record > total_loss:
                 validation_record = total_loss
-                torch.save(model.state_dict(), 'state_dict.torch')
+                torch.save(model.state_dict(), 'state_dict_' + str(index) + '.torch')
                 print('saving ... new record ', validation_record)
+                no_progress = 0
+            else:
+                no_progress += 1
 
             plt.figure()
             plt.plot(training_history)
@@ -172,12 +182,16 @@ def train():
             plt.savefig('validation.png')
             plt.close()
 
-            print('EPOCH ' + str(epoch) + ' is finished')
+            print('EPOCH ' + str(epoch) + ' is finished', no_progress, index)
             epoch += 1
+
+            if no_progress > 100:
+                print('finished training')
+                return
 
 
 if __name__ == '__main__':
     import os
-
     os.environ['CUDA_VISIBLE_DEVICES'] = "0"
-    train()
+    for i in range(16):
+        train(i)
