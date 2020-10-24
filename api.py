@@ -41,14 +41,13 @@ class Model(nn.Module):
     VALID LOSS:
     '''
 
-
     def __init__(self):
         super(Model, self).__init__()
-        self.extractor = torchvision.models.densenet121(False)
+        self.extractor = torchvision.models.densenet121(True)
         self.embd = nn.Embedding(3, 2)
 
         self.head0 = nn.Sequential(nn.Linear(5, 1024), nn.ELU())
-        self.regressor = nn.Sequential(nn.Linear(1024 + 1024, 2048), nn.ELU(), nn.Linear(2048, 4096), nn.ELU(), nn.Linear(4096, 19))
+        self.regressor = nn.Sequential(nn.Linear(1024 + 1024, 2048), nn.ELU(), nn.Dropout(0.25), nn.Linear(2048, 4096), nn.ELU(), nn.Dropout(0.5), nn.Linear(4096, 19))
 
     def forward(self, img, gender, height, weight, age):
         # with torch.no_grad():
@@ -99,10 +98,14 @@ def extract_measurement(tensor):
 
 class Predictor:
 
-    def __init__(self, state_dict):
-        self.model = Model().eval().cuda()
-        self.model.load_state_dict(state_dict)
+    def __init__(self):
 
+        self.dicts = []
+        for i in range(16):
+            state_dict = torch.load("state_dict_" + str(i) + ".torch")
+            self.dicts.append(state_dict)
+
+        self.model = Model().eval().cuda()
         self.bkgmodel = gluoncv.model_zoo.get_model('fcn_resnet101_voc', pretrained=True, ctx=ctx)
 
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -116,7 +119,7 @@ class Predictor:
             normalize
         ])
 
-    def run(self, gender_value, height_value, weight_value, age_value, img):
+    def run(self, id, gender_value, height_value, weight_value, age_value, img):
         mask = segmentation_mask(self.bkgmodel, img)
         img = np.array(img)
         img[~mask] = 0
@@ -128,8 +131,17 @@ class Predictor:
 
         img = img.unsqueeze(0)
 
-        out = self.model.forward(img.cuda(), gender_value.cuda(), height_value.cuda(),
-                                 weight_value.cuda(), age_value.cuda())
+        if id != -1:
+            self.model.load_state_dict(self.dicts[id])
+            out = self.model.forward(img.cuda(), gender_value.cuda(), height_value.cuda(),
+                                     weight_value.cuda(), age_value.cuda())
+        else:
+            out = 0
+            for i in range(16):
+                self.model.load_state_dict(self.dicts[i])
+                out += self.model.forward(img.cuda(), gender_value.cuda(), height_value.cuda(),
+                                         weight_value.cuda(), age_value.cuda())
+            out /= 16
 
         reusults = extract_measurement(out)
 
@@ -163,16 +175,16 @@ class Predictor:
 
 
 if __name__ == '__main__':
-    state_dict = torch.load("state_dict.torch")
-    predictor = Predictor(state_dict)
-    # test(predictor)
+    with torch.no_grad():
+        predictor = Predictor()
+        # test(predictor)
+        index = -1 # -1 is ensemble, 0..15 are single models
+        gender = torch.tensor([1])  # 0 - female; 1 - male; 2 - who knows
+        height = torch.tensor([[187]])  # cm
+        weight = torch.tensor([[120]])  # kg
+        age = torch.tensor([[38]])  # seconds.. joke. years.
+        img = Image.open('/home/sparky/Downloads/20201019-Pics/16_1.jpg')  # photo
+        img = transforms.Resize(256)(img)
 
-    gender = torch.tensor([0])  # 0 - female; 1 - male; 2 - who knows
-    height = torch.tensor([[153]])  # cm
-    weight = torch.tensor([[49]])  # kg
-    age = torch.tensor([[38]])  # seconds.. joke. years.
-    img = Image.open('2081-张雪花.jpg')  # photo
-    img = transforms.Resize(256)(img)
-
-    reusults = predictor.run(gender, height, weight, age, img)
-    print(reusults)
+        reusults = predictor.run(index, gender, height, weight, age, img)
+        print(reusults)
