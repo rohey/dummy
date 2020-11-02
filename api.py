@@ -7,32 +7,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from torchvision import transforms
 from PIL import Image
-
-from glinsun_dataset import GlinsunDataset
+from PIL import ImageOps
+from glinsun_dataset import segmentation_mask, convert_shape
 import gluoncv
 import mxnet as mx
 import os
 from gluoncv.data.transforms.presets.segmentation import test_transform
 
 ctx = mx.cpu()
-
-
-def segmentation_mask(model, img):
-    # using cpu
-    img = mx.nd.array(np.asarray(img))
-    img = test_transform(img, ctx)
-    output = model.predict(img)
-    predict = mx.nd.squeeze(mx.nd.argmax(output, 1)).asnumpy() == 15.
-
-    # from gluoncv.utils.viz import get_color_pallete
-    # mask = get_color_pallete(predict, 'pascal_voc')
-
-    # mask.save('output.png')
-    # mmask = mpimg.imread('output.png')
-    # plt.imshow(mask)
-    # plt.show()
-
-    return predict
 
 
 class Model(nn.Module):
@@ -44,12 +26,13 @@ class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
         self.extractor = torchvision.models.densenet121(True)
-        self.embd = nn.Embedding(3, 2)
+        self.embd_gender = nn.Embedding(3, 2)
+        self.embd_shape = nn.Embedding(9, 5)
+        self.head0 = nn.Sequential(nn.Linear(5 + 5, 2048), nn.GELU())
+        self.regressor = nn.Sequential(nn.Linear(1024 + 2048, 2048), nn.GELU(), nn.Dropout(0.25),
+                                       nn.Linear(2048, 4096), nn.GELU(), nn.Dropout(0.5), nn.Linear(4096, 19))
 
-        self.head0 = nn.Sequential(nn.Linear(5, 1024), nn.ELU())
-        self.regressor = nn.Sequential(nn.Linear(1024 + 1024, 2048), nn.ELU(), nn.Dropout(0.25), nn.Linear(2048, 4096), nn.ELU(), nn.Dropout(0.5), nn.Linear(4096, 19))
-
-    def forward(self, img, gender, height, weight, age):
+    def forward(self, img, shape_value, gender, height, weight, age):
         # with torch.no_grad():
 
         features = self.extractor.features(img)
@@ -57,15 +40,17 @@ class Model(nn.Module):
         out = F.adaptive_avg_pool2d(out, (1, 1))
         out = torch.flatten(out, 1)
 
-        gender = self.embd(gender)
+        gender = self.embd_gender(gender)
+        shape = self.embd_shape(shape_value)
 
-        x = torch.cat((gender, height / 150., weight / 90., age / 60.), 1)
+        x = torch.cat((gender, shape, height / 70., weight / 45., age / 30.), 1)
 
         x0 = self.head0(x)
         x1 = out
         x = torch.cat((x0, x1), 1)
 
         return self.regressor(x)
+
 
 def extract_measurement(tensor):
     results = dict()
@@ -106,41 +91,45 @@ class Predictor:
             self.dicts.append(state_dict)
 
         self.model = Model().eval().cuda()
-        self.bkgmodel = gluoncv.model_zoo.get_model('fcn_resnet101_voc', pretrained=True, ctx=ctx)
 
-        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                         std=[0.229, 0.224, 0.225])
+        self.seg_model = gluoncv.model_zoo.get_model('deeplab_resnet152_voc', pretrained=True, ctx=ctx)
+        self.box_model = gluoncv.model_zoo.get_model('yolo3_darknet53_voc', pretrained=True, ctx=ctx)
 
+        self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                              std=[0.229, 0.224, 0.225])
+        # add scale
         self.transform = transforms.Compose([
-            transforms.Grayscale(3),
-            transforms.Resize(256),
-            transforms.CenterCrop(256),
+            transforms.Resize((256, 256)),
             transforms.ToTensor(),
-            normalize
+            self.normalize
         ])
 
-    def run(self, id, gender_value, height_value, weight_value, age_value, img):
-        mask = segmentation_mask(self.bkgmodel, img)
-        img = np.array(img)
-        img[~mask] = 0
-        img = Image.fromarray(img)
-        img = self.transform(img)
+    def run(self, id, gender_value, shape_type, height_value, weight_value, age_value, pilimg):
 
-        # plt.imshow(img.transpose(0, 2).transpose(0, 1).cpu().detach().numpy())
-        # plt.show()
+        img = transforms.Resize(512)(pilimg)
+        img = segmentation_mask(self.seg_model, self.box_model, img)
+        img = Image.fromarray(img)
+
+        desired_size = max(img.height, img.width)
+        delta_w = desired_size - img.width
+        delta_h = desired_size - img.height
+        padding = (delta_w // 2, delta_h // 2, delta_w - (delta_w // 2), delta_h - (delta_h // 2))
+        new_im = ImageOps.expand(img, padding)
+
+        img = self.transform(new_im)
+
 
         img = img.unsqueeze(0)
-
         if id != -1:
             self.model.load_state_dict(self.dicts[id])
-            out = self.model.forward(img.cuda(), gender_value.cuda(), height_value.cuda(),
+            out = self.model.forward(img.cuda(), shape_type.cuda(), gender_value.cuda(), height_value.cuda(),
                                      weight_value.cuda(), age_value.cuda())
         else:
             out = 0
             for i in range(16):
                 self.model.load_state_dict(self.dicts[i])
-                out += self.model.forward(img.cuda(), gender_value.cuda(), height_value.cuda(),
-                                         weight_value.cuda(), age_value.cuda())
+                out += self.model.forward(img.cuda(), shape_type.cuda(), gender_value.cuda(), height_value.cuda(),
+                                          weight_value.cuda(), age_value.cuda())
             out /= 16
 
         reusults = extract_measurement(out)
@@ -178,13 +167,44 @@ if __name__ == '__main__':
     with torch.no_grad():
         predictor = Predictor()
         # test(predictor)
-        index = -1 # -1 is ensemble, 0..15 are single models
+        index = -1  # -1 is ensemble, 0..15 are single models
         gender = torch.tensor([1])  # 0 - female; 1 - male; 2 - who knows
         height = torch.tensor([[187]])  # cm
         weight = torch.tensor([[120]])  # kg
         age = torch.tensor([[38]])  # seconds.. joke. years.
-        img = Image.open('/home/sparky/Downloads/20201019-Pics/16_1.jpg')  # photo
-        img = transforms.Resize(256)(img)
 
-        reusults = predictor.run(index, gender, height, weight, age, img)
+
+        """
+        def convert_shape(gender, shape_type):
+            if (gender == "male") or (gender == "Male"):
+                if shape_type == "big belly":
+                    return 0
+                elif shape_type == "small belly":
+                    return 1
+                elif shape_type == "standard":
+                    return 2
+                elif shape_type == "oval":
+                    return 3
+                elif shape_type == "trapezoid":
+                    return 4
+                else:
+                    raise Exception()
+            else:
+                if shape_type == "rectangle":
+                    return 5
+                if shape_type == "triangle":
+                    return 6
+                if shape_type == "hourglass":
+                    return 7
+                if shape_type == "inverted triangle":
+                    return 8
+                else:
+                    raise Exception()
+        """
+        shape_type = torch.tensor([3])
+
+
+        img = Image.open('/home/sparky/Downloads/20201019-Pics/16_1.jpg')  # photo
+
+        reusults = predictor.run(index, gender, shape_type, height, weight, age, img)
         print(reusults)
