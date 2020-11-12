@@ -143,12 +143,7 @@ class Predictor:
 
         self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                               std=[0.229, 0.224, 0.225])
-        # add scale
-        self.transform = transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.ToTensor(),
-            self.normalize
-        ])
+
 
     def run(self, id, gender_value, shape_type, height_value, weight_value, age_value, pilimg):
 
@@ -162,19 +157,19 @@ class Predictor:
         padding = (delta_w // 2, delta_h // 2, delta_w - (delta_w // 2), delta_h - (delta_h // 2))
         new_im = ImageOps.expand(img, padding)
 
-        img = self.transform(new_im)
 
 
 
 
 
-        img = img.unsqueeze(0)
+
+
 
         simple_predictions = []
         for i in range(3):
             model = SimpleModel(i).eval().cuda()
             model.load_state_dict(self.simple_dicts [i])
-            out = model.forward(img.cuda(), shape_type.cuda(), gender_value.cuda(), height_value.cuda(),
+            out = model.forward(None, shape_type.cuda(), gender_value.cuda(), height_value.cuda(),
                                       weight_value.cuda(), age_value.cuda())
             simple_predictions.append(out)
         simple_predictions = torch.cat(simple_predictions, 0).mean(0, keepdim=True)
@@ -185,6 +180,19 @@ class Predictor:
         for i in range(3):
             model = EfficientModel(i).eval().cuda()
             model.load_state_dict(self.efficient_dicts [i])
+
+            image_size = model.extractor._global_params.image_size
+
+            # add scale
+            transform = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),
+                self.normalize
+            ])
+
+            img = transform(new_im)
+            img = img.unsqueeze(0)
+
             out = model.forward(img.cuda(), shape_type.cuda(), gender_value.cuda(), height_value.cuda(),
                                       weight_value.cuda(), age_value.cuda())
             efficient_predictions.append(out)
@@ -233,7 +241,7 @@ if __name__ == '__main__':
     with torch.no_grad():
         predictor = Predictor()
         # test(predictor)
-        index = 0  # 0 - variant #1, 1 - variant #2,  2 - the combination of #1 and #2
+        index = 2 # 0 - variant #1, 1 - variant #2,  2 - the combination of #1 and #2
         gender = torch.tensor([1])  # 0 - female; 1 - male; 2 - who knows
         height = torch.tensor([[187]])  # cm
         weight = torch.tensor([[120]])  # kg
