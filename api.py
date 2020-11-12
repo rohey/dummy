@@ -13,43 +13,83 @@ import gluoncv
 import mxnet as mx
 import os
 from gluoncv.data.transforms.presets.segmentation import test_transform
-
+from efficientnet_pytorch import EfficientNet
 ctx = mx.cpu()
 
 
-class Model(nn.Module):
+class SimpleModel(nn.Module):
     '''
+    https://www.kaggle.com/artkulak/inference-45-55-600-epochs-tuned-effnet-b5-30-ep
+    https://github.com/lukemelas/EfficientNet-PyTorch
+    https://github.com/artkulak/osic-pulmonary-fibrosis-progression
+
     TRAIN LOSS:
     VALID LOSS:
     '''
 
-    def __init__(self):
-        super(Model, self).__init__()
-        self.extractor = torchvision.models.densenet121(True)
+    def __init__(self, index):
+        super(SimpleModel, self).__init__()
         self.embd_gender = nn.Embedding(3, 2)
         self.embd_shape = nn.Embedding(9, 5)
-        self.head0 = nn.Sequential(nn.Linear(5 + 5, 2048), nn.GELU())
-        self.regressor = nn.Sequential(nn.Linear(1024 + 2048, 2048), nn.GELU(), nn.Dropout(0.25),
-                                       nn.Linear(2048, 4096), nn.GELU(), nn.Dropout(0.5), nn.Linear(4096, 19))
+        self.regressor = nn.Sequential(nn.Linear(10, 64), nn.GELU(), nn.Linear(64, 128), nn.GELU(), nn.Linear(128, 19))
+
+    def forward(self, img, shape_value, gender, height, weight, age):
+        # with torch.no_grad():
+        gender = self.embd_gender(gender)
+        shape = self.embd_shape(shape_value)
+        x = torch.cat((gender, shape, height / 70., weight / 45., age / 30.), 1)
+        return self.regressor(x)
+
+
+
+
+class EfficientModel(nn.Module):
+    '''
+    https://www.kaggle.com/artkulak/inference-45-55-600-epochs-tuned-effnet-b5-30-ep
+    https://github.com/lukemelas/EfficientNet-PyTorch
+    https://github.com/artkulak/osic-pulmonary-fibrosis-progression
+
+    TRAIN LOSS:
+    VALID LOSS:
+    '''
+
+    def __init__(self, index):
+        super(EfficientModel, self).__init__()
+        override_params = dict()
+        override_params['include_top'] = False
+
+        index = index % 4
+
+        self.extractor = EfficientNet.from_name('efficientnet-b' + str(index), include_top=False)
+
+        self.embd_gender = nn.Embedding(3, 2)
+        self.embd_shape = nn.Embedding(9, 5)
+
+
+        if index == 0 or index == 1:
+            fnum = 1280
+        elif index == 2:
+            fnum = 1408
+        elif index == 3:
+            fnum = 1536
+
+        self.regressor = nn.Sequential(nn.Linear(fnum + 10, 2048), nn.Dropout(0.5), nn.Linear(2048, 19))
 
     def forward(self, img, shape_value, gender, height, weight, age):
         # with torch.no_grad():
 
-        features = self.extractor.features(img)
-        out = F.relu(features, inplace=True)
-        out = F.adaptive_avg_pool2d(out, (1, 1))
-        out = torch.flatten(out, 1)
+        features = self.extractor.forward(img)
+        x0 = torch.flatten(features, 1)
 
         gender = self.embd_gender(gender)
         shape = self.embd_shape(shape_value)
 
-        x = torch.cat((gender, shape, height / 70., weight / 45., age / 30.), 1)
+        x1 = torch.cat((gender, shape, height / 70., weight / 45., age / 30.), 1)
 
-        x0 = self.head0(x)
-        x1 = out
         x = torch.cat((x0, x1), 1)
 
         return self.regressor(x)
+
 
 
 def extract_measurement(tensor):
@@ -84,13 +124,19 @@ def extract_measurement(tensor):
 class Predictor:
 
     def __init__(self):
+        folder = '12_11_2020'
 
-        self.dicts = []
-        for i in range(16):
-            state_dict = torch.load("state_dict_" + str(i) + ".torch")
-            self.dicts.append(state_dict)
+        self.simple_dicts = []
+        for i in range(3):
+            state_dict = torch.load(folder + "/simple_net_" + str(i) + ".torch")[0]
+            self.simple_dicts.append(state_dict)
 
-        self.model = Model().eval().cuda()
+        self.efficient_dicts = []
+        for i in range(3):
+            state_dict = torch.load(folder + "/efficient_net_" + str(i) + ".torch")[0]
+            self.efficient_dicts.append(state_dict)
+
+
 
         self.seg_model = gluoncv.model_zoo.get_model('deeplab_resnet152_voc', pretrained=True, ctx=ctx)
         self.box_model = gluoncv.model_zoo.get_model('yolo3_darknet53_voc', pretrained=True, ctx=ctx)
@@ -119,18 +165,38 @@ class Predictor:
         img = self.transform(new_im)
 
 
+
+
+
         img = img.unsqueeze(0)
-        if id != -1:
-            self.model.load_state_dict(self.dicts[id])
-            out = self.model.forward(img.cuda(), shape_type.cuda(), gender_value.cuda(), height_value.cuda(),
-                                     weight_value.cuda(), age_value.cuda())
+
+        simple_predictions = []
+        for i in range(3):
+            model = SimpleModel(i).eval().cuda()
+            model.load_state_dict(self.simple_dicts [i])
+            out = model.forward(img.cuda(), shape_type.cuda(), gender_value.cuda(), height_value.cuda(),
+                                      weight_value.cuda(), age_value.cuda())
+            simple_predictions.append(out)
+        simple_predictions = torch.cat(simple_predictions, 0).mean(0, keepdim=True)
+
+
+
+        efficient_predictions = []
+        for i in range(3):
+            model = EfficientModel(i).eval().cuda()
+            model.load_state_dict(self.efficient_dicts [i])
+            out = model.forward(img.cuda(), shape_type.cuda(), gender_value.cuda(), height_value.cuda(),
+                                      weight_value.cuda(), age_value.cuda())
+            efficient_predictions.append(out)
+        efficient_predictions = torch.cat(efficient_predictions, 0).mean(0, keepdim=True)
+
+
+        if id == 0:
+            out = simple_predictions
+        elif id == 1:
+            out = efficient_predictions
         else:
-            out = 0
-            for i in range(16):
-                self.model.load_state_dict(self.dicts[i])
-                out += self.model.forward(img.cuda(), shape_type.cuda(), gender_value.cuda(), height_value.cuda(),
-                                          weight_value.cuda(), age_value.cuda())
-            out /= 16
+            out = simple_predictions * 0.75 + efficient_predictions * 0.25
 
         reusults = extract_measurement(out)
 
@@ -167,7 +233,7 @@ if __name__ == '__main__':
     with torch.no_grad():
         predictor = Predictor()
         # test(predictor)
-        index = -1  # -1 is ensemble, 0..15 are single models
+        index = 0  # 0 - variant #1, 1 - variant #2,  2 - the combination of #1 and #2
         gender = torch.tensor([1])  # 0 - female; 1 - male; 2 - who knows
         height = torch.tensor([[187]])  # cm
         weight = torch.tensor([[120]])  # kg
@@ -201,7 +267,7 @@ if __name__ == '__main__':
                 else:
                     raise Exception()
         """
-        shape_type = torch.tensor([3])
+        shape_type = torch.tensor([8])
 
 
         img = Image.open('/home/sparky/Downloads/20201019-Pics/16_1.jpg')  # photo
